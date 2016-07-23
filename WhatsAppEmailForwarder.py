@@ -68,7 +68,7 @@ from yowsup.layers.protocol_receipts.protocolentities \
         import OutgoingReceiptProtocolEntity
 from yowsup.layers.protocol_presence import YowPresenceProtocolLayer
 from yowsup.layers.stanzaregulator import YowStanzaRegulator
-from yowsup.layers.axolotl import YowAxolotlLayer # FIXME
+#from yowsup.layers.axolotl import YowAxolotlLayer # FIXME
 from yowsup.stacks import YowStack, YowStackBuilder, YOWSUP_CORE_LAYERS
 
 
@@ -220,16 +220,16 @@ class YowsupMyStack(object):
         confinc = config['ingoing']
         if confinc['with'] == "LMTP":
             sockpath = confinc['socket']
-            self.server = YoLMTPServer(self.layer, sockpath, None)
+            self.server = YoLMTPServer(self.layer, self.stack, sockpath, None)
             atexit.register(clean_lmtp)
         elif confinc['with'] == "SMTP":
             host = confinc['host']
             port = confinc['port']
-            self.server = YoSMTPServer(self.layer, (host, port), None)
+            self.server = YoSMTPServer(self.layer, self.stack,(host, port), None)
         elif confinc['with'] == "POP3":
-           self.server = Pop3Client(self.layer, confinc)
+           self.server = Pop3Client(self.layer, self.stack, confinc)
         elif confinc['with'] == "IMAP":
-           self.server = ImapClient(self.layer, confinc)
+           self.server = ImapClient(self.layer, self.stack, confinc)
         else:
             raise Exception("Unknown ingoing type")
 
@@ -239,7 +239,6 @@ class YowsupMyStack(object):
 
         self.stack.broadcastEvent(
                 YowLayerEvent(YowNetworkLayer.EVENT_STATE_CONNECT))
-
         try:
             while True:
                 # FIXME: polling for IMAP and POP3, use async instead
@@ -249,6 +248,7 @@ class YowsupMyStack(object):
                 if args.debug:
                     print "== Server loop"
                 self.server.loop()
+                    
         except AuthError as e:
             print("Authentication Error: %s" % e.message)
         except Exception as e:
@@ -267,8 +267,9 @@ class LMTPChannel(SMTPChannel):
 
 
 class MailParserMixin():
-    def __init__(self, yowsup):
+    def __init__(self, yowsup, stack):
         self._yowsup = yowsup
+        self.stack = stack
 
     def loop(self): # FIXME: threads aren't needed with asyncore
         pass
@@ -288,7 +289,7 @@ class MailParserMixin():
         if len(txt.strip()) > 0:
             msg = TextMessageProtocolEntity(txt, to = jid)
             print "=> WhatsApp: -> %s" % (jid)
-            self._yowsup.toLower(msg)
+            self.stack.execDetached(self.stack.send(msg))
 
         # send media that were attached pieces
         if m.is_multipart():
@@ -304,7 +305,8 @@ class MailParserMixin():
                 msg = TextMessageProtocolEntity(txt, to = jid)
                 print "=> WhatsApp: -> %s" % (jid)
                 if not args.dry:
-                    self._yowsup.toLower(msg)
+                    self.stack.execDetached(self.stack.send(msg))
+                    
                 if args.debug:
                     print "! Message: {%s}" % (txt)
                     print "! from entity: {%s}" % (msg.getBody())
@@ -390,7 +392,7 @@ class MailParserMixin():
         entity = ImageDownloadableMediaMessageProtocolEntity.fromFilePath(
                 fpath, url, ip, jid)
         if not args.dry:
-            self._yowsup.toLower(entity)
+            self.stack.execDetached(self.stack.send(entity))
 
     def onRequestUploadError(self, jid, fpath, errorEntity, originalEntity):
         print "WhatsApp: -> upload request failed %s" % (fpath)
@@ -399,7 +401,7 @@ class MailParserMixin():
 
 
 class MailClient(MailParserMixin):
-    def __init__(self, yowsup, confinc):
+    def __init__(self, yowsup, stack, confinc):
         self.host = confinc['host']
         self.port = confinc['port']
         self.user = confinc['user']
@@ -409,6 +411,7 @@ class MailClient(MailParserMixin):
 
         self.messageQueue = Queue.Queue()
         self._yowsup = yowsup
+        self.stack = stack
         # FIXME: use asyncore instead
         self.thread = threading.Thread(target=self.worker)
 
@@ -517,9 +520,10 @@ class MailServer(SMTPServer, MailParserMixin):
 
 
 class YoSMTPServer(MailServer):
-    def __init__(self, yowsup, localaddr, remoteaddr):
+    def __init__(self, yowsup, stack, localaddr, remoteaddr):
         # code taken from original SMTPServer code
         self._yowsup = yowsup
+        self.stack = stack
         self._localaddr = localaddr
         self._remoteaddr = remoteaddr
         asyncore.dispatcher.__init__(self)
